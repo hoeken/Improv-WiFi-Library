@@ -152,6 +152,11 @@ public:
   bool tryConnectToWifi(const char *ssid, const char *password);
 
   /**
+   * Overload: tryConnectToWifi with custom delay and max attempts.
+   */
+  bool tryConnectToWifi(const char *ssid, const char *password, uint32_t delayMs, uint8_t maxAttempts);
+
+  /**
    * Check if connection is established using `WiFi.status() == WL_CONNECTED`
    *
    */

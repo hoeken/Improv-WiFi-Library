@@ -1,4 +1,12 @@
 #include "ImprovWiFiLibrary.h"
+#if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_ESP8266)
+#include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#define DELAY_MS(ms) vTaskDelay(pdMS_TO_TICKS(ms))
+#else
+#define DELAY_MS(ms) delay(ms)
+#endif
 
 void ImprovWiFi::handleSerial()
 {
@@ -177,21 +185,23 @@ void ImprovWiFi::setCustomConnectWiFi(CustomConnectWiFi *connectWiFiCallBack)
 
 bool ImprovWiFi::tryConnectToWifi(const char *ssid, const char *password)
 {
+  return tryConnectToWifi(ssid, password, DELAY_MS_WAIT_WIFI_CONNECTION, MAX_ATTEMPTS_WIFI_CONNECTION);
+}
+
+bool ImprovWiFi::tryConnectToWifi(const char *ssid, const char *password, uint32_t delayMs, uint8_t maxAttempts)
+{
   uint8_t count = 0;
 
-  if (isConnected())
-  {
+  if (isConnected()) {
     WiFi.disconnect();
-    delay(100);
+    DELAY_MS(100);
   }
 
   WiFi.begin(ssid, password);
 
-  while (!isConnected())
-  {
-    delay(DELAY_MS_WAIT_WIFI_CONNECTION);
-    if (count > MAX_ATTEMPTS_WIFI_CONNECTION)
-    {
+  while (!isConnected()) {
+    DELAY_MS(delayMs);
+    if (count > maxAttempts) {
       WiFi.disconnect();
       return false;
     }
@@ -216,7 +226,7 @@ void ImprovWiFi::getAvailableWifiNetworks()
     std::vector<uint8_t> data = build_rpc_response(
         ImprovTypes::GET_WIFI_NETWORKS, wifinetworks, false);
     sendResponse(data);
-    delay(1);
+    DELAY_MS(1);
   }
   // final response
   std::vector<uint8_t> data =
