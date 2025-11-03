@@ -28,8 +28,9 @@ void ImprovWiFiBLE::setDeviceInfo(ImprovTypes::ChipFamily chipFamily,
   // Initialize BLE and set up the Improv service
   NimBLEDevice::init(device_name_.c_str());
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
-  NimBLEDevice::setOwnAddrType(
-      BLE_OWN_ADDR_PUBLIC); // helps some Androids find it
+
+  // Prefer a robust address type on ESP32
+  NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RPA_RANDOM_DEFAULT);
 
   server_ = NimBLEDevice::createServer();
   server_->setCallbacks(this);
@@ -40,8 +41,8 @@ void ImprovWiFiBLE::setDeviceInfo(ImprovTypes::ChipFamily chipFamily,
       CHAR_STATE_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
   ch_error_ = service_->createCharacteristic(
       CHAR_ERROR_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
-  ch_rpc_cmd_ =
-      service_->createCharacteristic(CHAR_RPC_CMD_UUID, NIMBLE_PROPERTY::WRITE);
+  ch_rpc_cmd_ = service_->createCharacteristic(
+      CHAR_RPC_CMD_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
   ch_rpc_res_ = service_->createCharacteristic(
       CHAR_RPC_RES_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
   ch_caps_ =
@@ -49,28 +50,27 @@ void ImprovWiFiBLE::setDeviceInfo(ImprovTypes::ChipFamily chipFamily,
 
   ch_rpc_cmd_->setCallbacks(this);
 
-  updateState(state_);
-  updateError(error_);
-  updateCaps(caps_);
+  // If you don't require physical authorization, start Authorized (0x02)
+  updateCaps(/*identify supported?*/ caps_); // e.g., caps_ = 0x01 if identify
+                                             // supported
+  updateError(error_);                       // 0x00 by default
+  updateState(state_); // set to 0x02 (Authorized) if no button required
 
   service_->start();
 
-  // --- Advertising setup ---
   adv_ = NimBLEDevice::getAdvertising();
-  adv_->addServiceUUID(SVC_UUID); // allows UUID-based discovery filters
 
-  // Put the device name in the scan response (helps it show up nicely)
-  NimBLEAdvertisementData scan;
-  if (!device_name_.isEmpty()) {
-    scan.setName(device_name_.c_str());
-  }
-  adv_->setScanResponseData(scan);
-
-  // Primary advertisement: include flags, UUID, and service data
+  // Build primary advertisement (UUID + Service Data + maybe short name)
   NimBLEAdvertisementData advData = buildAdvData(state_, caps_);
   adv_->setAdvertisementData(advData);
 
-  // Start advertising with the initial state/caps
+  // Optional: put the full name in the scan response (keeps primary ADV small)
+  if (!device_name_.isEmpty()) {
+    NimBLEAdvertisementData scan;
+    scan.setName(device_name_.c_str());
+    adv_->setScanResponseData(scan);
+  }
+
   advertiseNow();
   adv_->start();
 }
@@ -297,29 +297,25 @@ NimBLEAdvertisementData ImprovWiFiBLE::buildAdvData(uint8_t state,
                                                     uint8_t caps) {
   NimBLEAdvertisementData ad;
 
-  // 1) Flags: LE General Discoverable + BR/EDR not supported
+  // Flags: LE General Discoverable + BR/EDR not supported
   ad.setFlags(0x06);
 
-  // 2) 128-bit Improv Service UUID (required; must be in the same ADV as
-  // Service Data)
+  // REQUIRED: 128-bit Improv Service UUID in the same primary ADV as Service
+  // Data (not scan response)
   ad.addServiceUUID(NimBLEUUID(SVC_UUID));
 
-  // 3) Service Data (AD type 0x16) with 16-bit UUID 0x4677 + payload
-  //    Payload bytes per spec: [state, capabilities, 0, 0, 0, 0]
-  static const size_t DATA_LEN = 9;
-  uint8_t data[DATA_LEN] = {
-      0x16, // AD type = Service Data (16-bit UUID)
-      (uint8_t)(SERVICE_DATA_UUID_16 & 0xFF), // UUID LSB = 0x77
-      (uint8_t)(SERVICE_DATA_UUID_16 >> 8),   // UUID MSB = 0x46
-      state,
-      caps,
-      0x00,
-      0x00,
-      0x00,
-      0x00 // reserved
-  };
+  // REQUIRED: Service Data UUID = 0x4677 with payload [state, caps, 0,0,0,0]
+  uint8_t payload[6] = {state, caps, 0x00, 0x00, 0x00, 0x00};
+  ad.setServiceData(NimBLEUUID((uint16_t)SERVICE_DATA_UUID_16), payload,
+                    sizeof(payload));
 
-  ad.addData(data, DATA_LEN);
+  // Optional: a short name in the primary ADV helps some scanners; keep it
+  // short to stay under 31B
+  if (!device_name_.isEmpty()) {
+    // Short name so we still fit UUID + service data
+    ad.setShortName(device_name_.c_str());
+  }
+
   return ad;
 }
 
