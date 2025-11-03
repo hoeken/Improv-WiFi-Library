@@ -20,6 +20,40 @@ void loop() {
 }
 ```
 
+You can also use Improv over Bluetooth, but it uses about 25kb memory:
+
+```cpp
+#include <ImprovWiFiBLE.h>
+
+ImprovWiFiBLE improvBLE;
+
+void setup() {
+  improvBLE.setDeviceInfo(ImprovTypes::ChipFamily::CF_ESP32, "My-Device-9a4c2b", "2.1.5", "My Device");
+}
+
+void loop() { 
+}
+```
+
+Or both at the same time:
+
+```cpp
+#include <ImprovWiFiLibrary.h>
+#include <ImprovWiFiBLE.h>
+
+ImprovWiFi improvSerial(&Serial);
+ImprovWiFiBLE improvBLE;
+
+void setup() {
+  improvSerial.setDeviceInfo(ImprovTypes::ChipFamily::CF_ESP32, "My-Device-9a4c2b", "2.1.5", "My Device");
+  improvBLE.setDeviceInfo(ImprovTypes::ChipFamily::CF_ESP32, "My-Device-9a4c2b", "2.1.5", "My Device");
+}
+
+void loop() { 
+  improvSerial.handleSerial();
+}
+```
+
 ## Documentation
 
 The full library documentation can be seen in [docs/](docs/ImprovWiFiLibrary.md) folder.
