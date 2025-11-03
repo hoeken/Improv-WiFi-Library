@@ -1,19 +1,41 @@
 #include "ImprovWiFiBLE.h"
 
-void ImprovWiFiBLE::begin(ImprovTypes::ChipFamily chip,
-                          const String &deviceName, const String &fwVersion,
-                          const String &friendlyName) {
-  chip_ = chip;
-  device_name_ = deviceName;
-  fw_version_ = fwVersion;
-  friendly_name_ = friendlyName;
+#if defined(ARDUINO_ARCH_ESP8266)
+#include <ESP8266WiFi.h>
+#elif defined(ARDUINO_ARCH_ESP32)
+#include <WiFi.h>
+#endif
 
+// ==== ctor/dtor ====
+ImprovWiFiBLE::~ImprovWiFiBLE() {
+  // Minimal cleanup; NimBLEDevice::deinit() can be called by app if desired
+}
+
+// ==== public API (matching ImprovWiFi) ====
+
+void ImprovWiFiBLE::setDeviceInfo(ImprovTypes::ChipFamily chipFamily,
+                                  const char *firmwareName,
+                                  const char *firmwareVersion,
+                                  const char *deviceName,
+                                  const char *deviceUrl) {
+  chip_ = chipFamily;
+  firmware_name_ = firmwareName ? firmwareName : "";
+  firmware_version_ = firmwareVersion ? firmwareVersion : "";
+  device_name_ = deviceName ? deviceName : "";
+  device_friendly_name_ = deviceName ? deviceName : "";
+  device_url_ = deviceUrl ? deviceUrl : "";
+
+  // Initialize BLE and set up the Improv service
   NimBLEDevice::init(device_name_.c_str());
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+  NimBLEDevice::setOwnAddrType(
+      BLE_OWN_ADDR_PUBLIC); // helps some Androids find it
+
   server_ = NimBLEDevice::createServer();
   server_->setCallbacks(this);
 
   service_ = server_->createService(SVC_UUID);
+
   ch_state_ = service_->createCharacteristic(
       CHAR_STATE_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
   ch_error_ = service_->createCharacteristic(
@@ -26,65 +48,76 @@ void ImprovWiFiBLE::begin(ImprovTypes::ChipFamily chip,
       service_->createCharacteristic(CHAR_CAPS_UUID, NIMBLE_PROPERTY::READ);
 
   ch_rpc_cmd_->setCallbacks(this);
+
   updateState(state_);
   updateError(error_);
   updateCaps(caps_);
 
   service_->start();
 
+  // --- Advertising setup ---
   adv_ = NimBLEDevice::getAdvertising();
-  adv_->addServiceUUID(SVC_UUID);
+  adv_->addServiceUUID(SVC_UUID); // allows UUID-based discovery filters
+
+  // Put the device name in the scan response (helps it show up nicely)
+  NimBLEAdvertisementData scan;
+  if (!device_name_.isEmpty()) {
+    scan.setName(device_name_.c_str());
+  }
+  adv_->setScanResponseData(scan);
+
+  // Primary advertisement: include flags, UUID, and service data
+  NimBLEAdvertisementData advData = buildAdvData(state_, caps_);
+  adv_->setAdvertisementData(advData);
+
+  // Start advertising with the initial state/caps
   advertiseNow();
   adv_->start();
 }
 
-void ImprovWiFiBLE::start() {
-  if (!adv_)
-    return;
-  advertiseNow();
-  adv_->start();
+void ImprovWiFiBLE::setDeviceInfo(ImprovTypes::ChipFamily chipFamily,
+                                  const char *firmwareName,
+                                  const char *firmwareVersion,
+                                  const char *deviceName) {
+  setDeviceInfo(chipFamily, firmwareName, firmwareVersion, deviceName, nullptr);
 }
 
-void ImprovWiFiBLE::stop() {
-  if (adv_)
-    adv_->stop();
-  NimBLEDevice::deinit(true);
+void ImprovWiFiBLE::onImprovError(OnImprovError *errorCallback) {
+  onImprovErrorCallback_ = errorCallback;
 }
 
-void ImprovWiFiBLE::setAuthorized(bool authorized) {
-  updateState(authorized ? STATE_AUTHORIZED : STATE_AUTH_REQUIRED);
-  advertiseNow();
+void ImprovWiFiBLE::onImprovConnected(OnImprovConnected *connectedCallback) {
+  onImprovConnectedCallback_ = connectedCallback;
 }
 
-void ImprovWiFiBLE::setProvisioning() {
-  updateState(STATE_PROVISIONING);
-  advertiseNow();
+void ImprovWiFiBLE::setCustomConnectWiFi(
+    CustomConnectWiFi *connectWiFiCallBack) {
+  customConnectWiFiCallback_ = connectWiFiCallBack;
 }
 
-void ImprovWiFiBLE::setProvisioned(const String &optionalUrl) {
-  updateState(STATE_PROVISIONED);
-  advertiseNow();
-
-  // RPC result: send optional URL for clients to open
-  std::vector<uint8_t> buf;
-  buf.push_back(0x01); // last cmd = Send Wi-Fi
-  const std::string s1 = optionalUrl.c_str();
-  const size_t payload_len = 1 + s1.size(); // [len][url]
-  buf.push_back(static_cast<uint8_t>(payload_len));
-  buf.push_back(static_cast<uint8_t>(s1.size()));
-  buf.insert(buf.end(), s1.begin(), s1.end());
-  buf.push_back(checksumLSB(buf.data(), buf.size()));
-  ch_rpc_res_->setValue((uint8_t *)buf.data(), buf.size());
-  ch_rpc_res_->notify();
-
-  delay(250); // give clients time to read new state
+bool ImprovWiFiBLE::tryConnectToWifi(const char *ssid, const char *password) {
+  // Defaults match simple behavior of the serial variant
+  return tryConnectToWifi(ssid, password, /*delayMs*/ 500, /*maxAttempts*/ 20);
 }
 
-void ImprovWiFiBLE::setError(uint8_t code) {
-  updateError(code);
-  ch_error_->notify();
-  advertiseNow();
+bool ImprovWiFiBLE::tryConnectToWifi(const char *ssid, const char *password,
+                                     uint32_t delayMs, uint8_t maxAttempts) {
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(true);
+  WiFi.begin(ssid, password);
+
+  for (uint8_t i = 0; i < maxAttempts; i++) {
+    if (WiFi.status() == WL_CONNECTED) {
+      return true;
+    }
+    delay(delayMs);
+  }
+  return (WiFi.status() == WL_CONNECTED);
 }
+
+bool ImprovWiFiBLE::isConnected() { return WiFi.status() == WL_CONNECTED; }
+
+// ==== NimBLE callbacks ====
 
 void ImprovWiFiBLE::onDisconnect(NimBLEServer *) {
   if (adv_) {
@@ -98,47 +131,64 @@ void ImprovWiFiBLE::onWrite(NimBLECharacteristic *c, NimBLEConnInfo &) {
     return;
   const std::string v = c->getValue();
   if (v.size() < 3) {
-    setError(ERR_BAD_PACKET);
+    updateError(ERR_BAD_PACKET);
+    if (onImprovErrorCallback_)
+      onImprovErrorCallback_(ImprovTypes::Error::ERROR_INVALID_RPC);
     return;
   }
   handleRpc(reinterpret_cast<const uint8_t *>(v.data()), v.size());
 }
 
+// ==== internal helpers / RPCs ====
+
 void ImprovWiFiBLE::handleRpc(const uint8_t *data, size_t len) {
   const uint8_t cmd = data[0];
   const uint8_t declared_len = data[1];
+
   if (declared_len + 3 != len) {
-    setError(ERR_BAD_PACKET);
+    updateError(ERR_BAD_PACKET);
+    if (onImprovErrorCallback_)
+      onImprovErrorCallback_(ImprovTypes::Error::ERROR_INVALID_RPC);
     return;
   }
+
   const uint8_t cs = data[len - 1];
   if (checksumLSB(data, len - 1) != cs) {
-    setError(ERR_BAD_PACKET);
+    updateError(ERR_BAD_PACKET);
+    if (onImprovErrorCallback_)
+      onImprovErrorCallback_(ImprovTypes::Error::ERROR_INVALID_RPC);
     return;
   }
 
   switch (cmd) {
-  case 0x01:
+  case 0x01: // Send Wi-Fi
     rpcSendWifi(&data[2], declared_len);
-    break; // Send Wi-Fi
-  case 0x02:
+    break;
+  case 0x02: // Identify
     rpcIdentify();
-    break; // Identify
+    break;
   default:
-    setError(ERR_UNKNOWN_CMD);
+    updateError(ERR_UNKNOWN_CMD);
+    if (onImprovErrorCallback_)
+      onImprovErrorCallback_(ImprovTypes::Error::ERROR_INVALID_RPC);
     break;
   }
 }
 
 void ImprovWiFiBLE::rpcSendWifi(const uint8_t *p, size_t n) {
   if (n < 2) {
-    setError(ERR_BAD_PACKET);
+    updateError(ERR_BAD_PACKET);
+    if (onImprovErrorCallback_)
+      onImprovErrorCallback_(ImprovTypes::Error::ERROR_INVALID_RPC);
     return;
   }
 
+  // Parse SSID
   const uint8_t ssid_len = p[0];
   if (1 + ssid_len > n) {
-    setError(ERR_BAD_PACKET);
+    updateError(ERR_BAD_PACKET);
+    if (onImprovErrorCallback_)
+      onImprovErrorCallback_(ImprovTypes::Error::ERROR_INVALID_RPC);
     return;
   }
   String ssid;
@@ -146,14 +196,19 @@ void ImprovWiFiBLE::rpcSendWifi(const uint8_t *p, size_t n) {
   for (uint8_t i = 0; i < ssid_len; i++)
     ssid += (char)p[1 + i];
 
+  // Parse password
   size_t pos = 1 + ssid_len;
   if (pos >= n) {
-    setError(ERR_BAD_PACKET);
+    updateError(ERR_BAD_PACKET);
+    if (onImprovErrorCallback_)
+      onImprovErrorCallback_(ImprovTypes::Error::ERROR_INVALID_RPC);
     return;
   }
   const uint8_t pass_len = p[pos];
   if (pos + 1 + pass_len > n) {
-    setError(ERR_BAD_PACKET);
+    updateError(ERR_BAD_PACKET);
+    if (onImprovErrorCallback_)
+      onImprovErrorCallback_(ImprovTypes::Error::ERROR_INVALID_RPC);
     return;
   }
   String pass;
@@ -161,42 +216,111 @@ void ImprovWiFiBLE::rpcSendWifi(const uint8_t *p, size_t n) {
   for (uint8_t i = 0; i < pass_len; i++)
     pass += (char)p[pos + 1 + i];
 
-  setProvisioning();
-
+  // Attempt connection (custom callback first, like ImprovWiFi)
   bool ok = false;
-  if (connect_cb_)
-    ok = connect_cb_(ssid, pass);
+  if (customConnectWiFiCallback_) {
+    ok = customConnectWiFiCallback_(ssid.c_str(), pass.c_str());
+  } else {
+    ok = tryConnectToWifi(ssid.c_str(), pass.c_str());
+  }
 
   if (!ok) {
-    setError(ERR_CONNECT);
-    setAuthorized(true);
+    updateError(ERR_CONNECT);
+    if (onImprovErrorCallback_)
+      onImprovErrorCallback_(ImprovTypes::Error::ERROR_UNABLE_TO_CONNECT);
+    // Return to ready so clients can try again
+    updateState(STATE_AUTHORIZED);
+    advertiseNow();
     return;
   }
 
-  if (provisioned_cb_)
-    provisioned_cb_("");
-  setProvisioned("");
+  // Success path
+  if (onImprovConnectedCallback_) {
+    onImprovConnectedCallback_(ssid.c_str(), pass.c_str());
+  }
+
+  updateState(STATE_PROVISIONED);
+  advertiseNow();
+
+  // Send device URL back (mirrors serial semantics)
+  sendDeviceUrl();
+
+  delay(250); // allow clients to read updated chars
 }
 
 void ImprovWiFiBLE::rpcIdentify() {
-  if (identify_cb_)
-    identify_cb_();
+  // Identify capability advertised; nothing to do here for BLE side.
+}
+
+void ImprovWiFiBLE::sendDeviceUrl() {
+  // RPC result framing: [last_cmd=0x01][len][url_len][url...][checksum]
+  std::vector<uint8_t> buf;
+  buf.reserve(4 + device_url_.length());
+  buf.push_back(0x01);
+
+  const std::string url = device_url_.c_str();
+  const uint8_t url_len = static_cast<uint8_t>(url.size());
+  const uint8_t payload_len = 1 + url_len; // [url_len][url]
+  buf.push_back(payload_len);
+  buf.push_back(url_len);
+  buf.insert(buf.end(), url.begin(), url.end());
+
+  buf.push_back(checksumLSB(buf.data(), buf.size()));
+  ch_rpc_res_->setValue((uint8_t *)buf.data(), buf.size());
+  ch_rpc_res_->notify();
 }
 
 void ImprovWiFiBLE::updateState(uint8_t s) {
   state_ = s;
-  ch_state_->setValue(&state_, 1);
-  ch_state_->notify();
+  if (ch_state_) {
+    ch_state_->setValue(&state_, 1);
+    ch_state_->notify();
+  }
 }
 
 void ImprovWiFiBLE::updateError(uint8_t e) {
   error_ = e;
-  ch_error_->setValue(&error_, 1);
+  if (ch_error_) {
+    ch_error_->setValue(&error_, 1);
+    ch_error_->notify();
+  }
 }
 
 void ImprovWiFiBLE::updateCaps(uint8_t caps) {
   caps_ = caps;
-  ch_caps_->setValue(&caps_, 1);
+  if (ch_caps_) {
+    ch_caps_->setValue(&caps_, 1);
+  }
+}
+
+NimBLEAdvertisementData ImprovWiFiBLE::buildAdvData(uint8_t state,
+                                                    uint8_t caps) {
+  NimBLEAdvertisementData ad;
+
+  // 1) Flags: LE General Discoverable + BR/EDR not supported
+  ad.setFlags(0x06);
+
+  // 2) 128-bit Improv Service UUID (required; must be in the same ADV as
+  // Service Data)
+  ad.addServiceUUID(NimBLEUUID(SVC_UUID));
+
+  // 3) Service Data (AD type 0x16) with 16-bit UUID 0x4677 + payload
+  //    Payload bytes per spec: [state, capabilities, 0, 0, 0, 0]
+  static const size_t DATA_LEN = 9;
+  uint8_t data[DATA_LEN] = {
+      0x16, // AD type = Service Data (16-bit UUID)
+      (uint8_t)(SERVICE_DATA_UUID_16 & 0xFF), // UUID LSB = 0x77
+      (uint8_t)(SERVICE_DATA_UUID_16 >> 8),   // UUID MSB = 0x46
+      state,
+      caps,
+      0x00,
+      0x00,
+      0x00,
+      0x00 // reserved
+  };
+
+  ad.addData(data, DATA_LEN);
+  return ad;
 }
 
 void ImprovWiFiBLE::advertiseNow() {
@@ -204,26 +328,16 @@ void ImprovWiFiBLE::advertiseNow() {
     return;
   adv_->stop();
 
-  // Complete Service Data AD structure:
-  // [0]  = 0x16  → AD type: Service Data (16-bit UUID)
-  // [1]  = 0x77  → UUID 0x4677 (low byte, little-endian)
-  // [2]  = 0x46  → UUID 0x4677 (high byte)
-  // [3]  = state_ → Improv state (authorized / provisioning / etc.)
-  // [4]  = caps_  → device capabilities bitmask
-  // [5-8] = reserved / zeros per Improv spec
+  // Rebuild adv data with current state/caps; preserve scan response (name)
+  NimBLEAdvertisementData advData = buildAdvData(state_, caps_);
+  adv_->setAdvertisementData(advData);
 
-  const uint8_t serviceData[] = {0x16, 0x77, 0x46, state_, caps_,
-                                 0x00, 0x00, 0x00, 0x00};
-
-  NimBLEAdvertisementData ad;
-  ad.addData(serviceData, sizeof(serviceData));
-
-  adv_->setAdvertisementData(ad);
+  adv_->start();
 }
 
 uint8_t ImprovWiFiBLE::checksumLSB(const uint8_t *data, size_t len) {
   uint32_t sum = 0;
   for (size_t i = 0; i < len; i++)
     sum += data[i];
-  return (uint8_t)(sum & 0xFF);
+  return static_cast<uint8_t>(sum & 0xFF);
 }

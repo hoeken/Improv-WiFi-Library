@@ -1,47 +1,77 @@
 #pragma once
 #include "ImprovTypes.h"
-#include <Arduino.h>
-#include <NimBLEDevice.h>
 
-// Improv over BLE transport for ESP32/ESP32-S3 (NimBLE-Arduino).
-// Matches Improv BLE service/characteristics and framing.
+#ifdef ARDUINO
+#include <Arduino.h>
+#endif
+
+#include <NimBLEDevice.h>
+#include <functional>
+#include <vector>
+
+/**
+ * Improv WiFi BLE class
+ *
+ * Public API matches ImprovWiFi (Serial) so both transports can be used
+ * interchangeably from the sketch.
+ *
+ * Usage example:
+ *   ImprovWiFiBLE improvBLE;
+ *   improvBLE.setDeviceInfo(...);
+ *   improvBLE.onImprovError(...);
+ *   improvBLE.onImprovConnected(...);
+ *   improvBLE.setCustomConnectWiFi(...);
+ */
 class ImprovWiFiBLE : public NimBLECharacteristicCallbacks,
                       public NimBLEServerCallbacks {
 public:
-  using ConnectFn = std::function<bool(const String &ssid, const String &pass)>;
-  using IdentifyFn = std::function<void(void)>;
-  using ProvisionedFn = std::function<void(const String &url)>;
+  /**
+   * ## Type definitions (same as ImprovWiFi)
+   */
+  typedef void(OnImprovError)(ImprovTypes::Error);
+  typedef void(OnImprovConnected)(const char *ssid, const char *password);
+  typedef bool(CustomConnectWiFi)(const char *ssid, const char *password);
 
+  /**
+   * ## Constructors
+   */
   ImprovWiFiBLE() = default;
   ~ImprovWiFiBLE();
 
-  // Call once in setup(). deviceName is the BLE name users will see.
-  void begin(ImprovTypes::ChipFamily chip, const String &deviceName,
-             const String &fwVersion, const String &friendlyName);
+  /**
+   * ## Methods (names/signatures match ImprovWiFi)
+   */
 
-  // Start/stop advertising the Improv BLE service.
-  void start();
-  void stop();
+  // Set details of your device (advertising is set up inside this call)
+  void setDeviceInfo(ImprovTypes::ChipFamily chipFamily,
+                     const char *firmwareName, const char *firmwareVersion,
+                     const char *deviceName, const char *deviceUrl);
 
-  // Hooks
-  void onConnect(ConnectFn cb) { connect_cb_ = std::move(cb); }
-  void onIdentify(IdentifyFn cb) { identify_cb_ = std::move(cb); }
-  void onProvisioned(ProvisionedFn cb) { provisioned_cb_ = std::move(cb); }
+  void setDeviceInfo(ImprovTypes::ChipFamily chipFamily,
+                     const char *firmwareName, const char *firmwareVersion,
+                     const char *deviceName);
 
-  // State updates (library/app may call these to mirror actual Wi-Fi state)
-  void setAuthorized(bool authorized);
-  void setProvisioning();
-  void setProvisioned(const String &optionalUrl = "");
-  void setError(uint8_t code);
+  // Callback setters
+  void onImprovError(OnImprovError *errorCallback);
+  void onImprovConnected(OnImprovConnected *connectedCallback);
+  void setCustomConnectWiFi(CustomConnectWiFi *connectWiFiCallBack);
 
-  // Server callbacks
+  // Default WiFi connect helper (same name as serial transport)
+  bool tryConnectToWifi(const char *ssid, const char *password);
+  bool tryConnectToWifi(const char *ssid, const char *password,
+                        uint32_t delayMs, uint8_t maxAttempts);
+
+  // Mirror of ImprovWiFi::isConnected
+  bool isConnected();
+
+  // NimBLEServerCallbacks
   void onDisconnect(NimBLEServer *s);
 
-  // Characteristic (RPC) writes
+  // NimBLECharacteristicCallbacks
   void onWrite(NimBLECharacteristic *c, NimBLEConnInfo &info) override;
 
 private:
-  // Improv BLE UUIDs (service + required chars)
+  // === Improv BLE UUIDs ===
   static constexpr const char *SVC_UUID =
       "00467768-6228-2272-4663-277478268000";
   static constexpr const char *CHAR_STATE_UUID =
@@ -54,7 +84,8 @@ private:
       "00467768-6228-2272-4663-277478268004";
   static constexpr const char *CHAR_CAPS_UUID =
       "00467768-6228-2272-4663-277478268005";
-  static constexpr uint16_t SERVICE_DATA_UUID_16 = 0x4677; // for advertising
+  static constexpr uint16_t SERVICE_DATA_UUID_16 =
+      0x4677; // for advertisement service data
 
   enum : uint8_t {
     STATE_AUTH_REQUIRED = 0x01,
@@ -63,6 +94,7 @@ private:
     STATE_PROVISIONED = 0x04
   };
 
+  // Basic error mapping for BLE-side status byte
   enum : uint8_t {
     ERR_NONE = 0x00,
     ERR_BAD_PACKET = 0x01,
@@ -72,17 +104,26 @@ private:
     ERR_UNKNOWN = 0xFF
   };
 
-  // helpers
+  // Internal helpers
   void updateState(uint8_t s);
   void updateError(uint8_t e);
   void updateCaps(uint8_t caps);
+
+  // Build advertisement payload (Flags + 128-bit UUID + Service Data)
+  NimBLEAdvertisementData buildAdvData(uint8_t state, uint8_t caps);
+
+  // (Re)apply adv data that reflects current state/caps; keeps scan response
   void advertiseNow();
+
   static uint8_t checksumLSB(const uint8_t *data, size_t len);
 
-  // RPCs
+  // RPC handlers
   void handleRpc(const uint8_t *data, size_t len);
   void rpcSendWifi(const uint8_t *payload, size_t n);
   void rpcIdentify();
+
+  // send response with device URL (mirrors serial transport semantics)
+  void sendDeviceUrl();
 
   // BLE objects
   NimBLEServer *server_{nullptr};
@@ -96,17 +137,19 @@ private:
 
   // identity
   ImprovTypes::ChipFamily chip_{ImprovTypes::ChipFamily::CF_ESP32};
+  String firmware_name_;
+  String firmware_version_;
   String device_name_;
-  String fw_version_;
-  String friendly_name_;
+  String device_friendly_name_;
+  String device_url_;
 
   // state
-  uint8_t state_{STATE_AUTHORIZED}; // start ready unless you gate with a button
+  uint8_t state_{STATE_AUTHORIZED};
   uint8_t error_{ERR_NONE};
   uint8_t caps_{0x01}; // bit0: Identify supported
 
   // user callbacks
-  ConnectFn connect_cb_;
-  IdentifyFn identify_cb_;
-  ProvisionedFn provisioned_cb_;
+  OnImprovError *onImprovErrorCallback_{nullptr};
+  OnImprovConnected *onImprovConnectedCallback_{nullptr};
+  CustomConnectWiFi *customConnectWiFiCallback_{nullptr};
 };
