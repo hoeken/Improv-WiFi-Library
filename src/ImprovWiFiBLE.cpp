@@ -307,8 +307,9 @@ NimBLEAdvertisementData ImprovWiFiBLE::buildAdvData(uint8_t state,
   // Data (not scan response)
   ad.addServiceUUID(NimBLEUUID(SVC_UUID));
 
-  // REQUIRED: Service Data UUID = 0x4677 with payload [state, caps, 0,0,0,0]
-  uint8_t payload[6] = {state, caps, 0x00, 0x00, 0x00, 0x00};
+  // REQUIRED: Service Data UUID = 0x4677 with payload [0x77, 0x46, state, caps, 0,0,0,0]
+  // 0x77, 0x46 are the Improv protocol magic bytes - REQUIRED for recognition
+  uint8_t payload[8] = {0x77, 0x46, state, caps, 0x00, 0x00, 0x00, 0x00};
   ad.setServiceData(NimBLEUUID((uint16_t)SERVICE_DATA_UUID_16), payload,
                     sizeof(payload));
 
