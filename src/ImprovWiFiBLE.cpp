@@ -1,3 +1,6 @@
+// Only compile BLE support if explicitly enabled
+#ifdef IMPROV_WIFI_BLE_ENABLED
+
 #include "ImprovWiFiBLE.h"
 
 #if defined(ARDUINO_ARCH_ESP8266)
@@ -337,3 +340,5 @@ uint8_t ImprovWiFiBLE::checksumLSB(const uint8_t *data, size_t len) {
     sum += data[i];
   return static_cast<uint8_t>(sum & 0xFF);
 }
+
+#endif // IMPROV_WIFI_BLE_ENABLED

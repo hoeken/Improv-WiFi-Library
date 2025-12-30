@@ -1,4 +1,8 @@
 #pragma once
+
+// Only compile BLE support if explicitly enabled
+#ifdef IMPROV_WIFI_BLE_ENABLED
+
 #include "ImprovTypes.h"
 
 #ifdef ARDUINO
@@ -153,3 +157,5 @@ private:
   OnImprovConnected *onImprovConnectedCallback_{nullptr};
   CustomConnectWiFi *customConnectWiFiCallback_{nullptr};
 };
+
+#endif // IMPROV_WIFI_BLE_ENABLED

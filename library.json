@@ -36,12 +36,6 @@
     "espressif32",
     "espressif8266"
   ],
-  "dependencies": [
-    {
-      "name": "h2zero/NimBLE-Arduino",
-      "version": "^2.3.7"
-    }
-  ],
   "export": {
     "include": [
       "examples/*",

@@ -20,7 +20,29 @@ void loop() {
 }
 ```
 
-You can also use Improv over Bluetooth, but it uses about 25kb memory:
+## Bluetooth Support (Optional)
+
+You can also use Improv over Bluetooth (uses about 25kb memory). BLE support is **optional** and must be explicitly enabled.
+
+### Enabling BLE Support
+
+To enable BLE functionality, you need to:
+
+1. **Add the build flag** to your `platformio.ini`:
+   ```ini
+   build_flags =
+       -DIMPROV_WIFI_BLE_ENABLED
+   ```
+
+2. **Add the NimBLE-Arduino dependency** to your `platformio.ini`:
+   ```ini
+   lib_deps =
+       h2zero/NimBLE-Arduino@^2.3.7
+   ```
+
+**Note:** BLE is not supported on ESP32-S2 and ESP32-C2 as these chips lack Bluetooth hardware. Only enable BLE for chips that support it (ESP32, ESP32-C3, ESP32-S3).
+
+### Example with BLE enabled:
 
 ```cpp
 #include <ImprovWiFiBLE.h>
@@ -31,25 +53,31 @@ void setup() {
   improvBLE.setDeviceInfo(ImprovTypes::ChipFamily::CF_ESP32, "My-Device-9a4c2b", "2.1.5", "My Device");
 }
 
-void loop() { 
+void loop() {
 }
 ```
 
-Or both at the same time:
+### Using both Serial and BLE:
 
 ```cpp
 #include <ImprovWiFiLibrary.h>
+#ifdef IMPROV_WIFI_BLE_ENABLED
 #include <ImprovWiFiBLE.h>
+#endif
 
 ImprovWiFi improvSerial(&Serial);
+#ifdef IMPROV_WIFI_BLE_ENABLED
 ImprovWiFiBLE improvBLE;
+#endif
 
 void setup() {
   improvSerial.setDeviceInfo(ImprovTypes::ChipFamily::CF_ESP32, "My-Device-9a4c2b", "2.1.5", "My Device");
+  #ifdef IMPROV_WIFI_BLE_ENABLED
   improvBLE.setDeviceInfo(ImprovTypes::ChipFamily::CF_ESP32, "My-Device-9a4c2b", "2.1.5", "My Device");
+  #endif
 }
 
-void loop() { 
+void loop() {
   improvSerial.handleSerial();
 }
 ```
